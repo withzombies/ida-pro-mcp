@@ -1501,6 +1501,49 @@ def read_memory_bytes(
 
 @jsonrpc
 @idaread
+def data_read_byte(
+    address: Annotated[str, "Address to get 1 byte value from"],
+) -> int:
+    """Get 1 byte value at the specified address"""
+    ea = parse_address(address)
+    return ida_bytes.get_wide_byte(ea)
+
+@jsonrpc
+@idaread
+def data_read_word(
+    address: Annotated[str, "Address to get 2 bytes value from"],
+) -> int:
+    """Get 2 bytes value at the specified address"""
+    ea = parse_address(address)
+    return ida_bytes.get_wide_word(ea)
+
+@jsonrpc
+@idaread
+def data_read_dword(
+    address: Annotated[str, "Address to get 4 bytes value from"],
+) -> int:
+    """Get 4 bytes value at the specified address"""
+    ea = parse_address(address)
+    return ida_bytes.get_wide_dword(ea)
+
+@jsonrpc
+@idaread
+def data_read_qword(address: Annotated[str, "Address to get 8 bytes value from"]) -> int:
+    """Get 8 bytes value at the specified address"""
+    ea = parse_address(address)
+    return ida_bytes.get_qword(ea)
+
+@jsonrpc
+@idaread
+def data_read_string(address: Annotated[str, "Address to get string from"]):
+    """Get string at the specified address"""
+    try:
+        return idaapi.get_strlit_contents(parse_address(address),-1,0).decode("utf-8")
+    except Exception as e:
+        return "Error:" + str(e)
+
+@jsonrpc
+@idaread
 @unsafe
 def dbg_get_registers() -> list[dict[str, str]]:
     """Get all registers and their values. This function is only available when debugging."""
