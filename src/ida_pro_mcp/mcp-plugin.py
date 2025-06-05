@@ -888,7 +888,7 @@ class DisassemblyLine(TypedDict):
     address: str
     label: Optional[str]
     instruction: str
-    comment: Optional[str]
+    comments: list[str]
 
 class Argument(TypedDict):
     name: str
@@ -926,32 +926,69 @@ def disassemble_function(
         if label == "":
             label = None
 
+        comments = []
+        if comment := idaapi.get_cmt(address, False):
+            comments += [comment]
+        if comment := idaapi.get_cmt(address, True):
+            comments += [comment]
+
         raw_instruction = idaapi.generate_disasm_line(address, 0)
         tls = ida_kernwin.tagged_line_sections_t()
         ida_kernwin.parse_tagged_line_sections(tls, raw_instruction)
         insn_section = tls.first(ida_lines.COLOR_INSN)
 
-        mnem = ida_lines.tag_remove(insn_section.substr(raw_instruction))
         operands = []
         for op_tag in range(ida_lines.COLOR_OPND1, ida_lines.COLOR_OPND8 + 1):
             op_n = tls.first(op_tag)
             if not op_n:
                 break
 
-            operands += [ida_lines.tag_remove(op_n.substr(raw_instruction))]
+            op: str = op_n.substr(raw_instruction)
+            op_str = ida_lines.tag_remove(op)
 
+            # Do a lot of work to add address comments for symbols
+            for idx in range(len(op) - 2):
+                if op[idx] != idaapi.COLOR_ON:
+                    continue
+
+                idx += 1
+                if ord(op[idx]) != idaapi.COLOR_ADDR:
+                    continue
+
+                idx += 1
+                addr_string = op[idx:idx + idaapi.COLOR_ADDR_SIZE]
+                idx += idaapi.COLOR_ADDR_SIZE
+
+                addr = int(addr_string, 16)
+
+                # Find the next color and slice until there
+                symbol = op[idx:op.find(idaapi.COLOR_OFF, idx)]
+
+                if symbol == '':
+                    # We couldn't figure out the symbol, so use the whole op_str
+                    symbol = op_str
+
+                comments += [f"{symbol}={addr:#x}"]
+
+                # print its value if its type is available
+                try:
+                    value = get_global_variable_value_internal(addr)
+                except:
+                    continue
+
+                comments += [f"*{symbol}={value}"]
+
+            operands += [op_str]
+
+        mnem = ida_lines.tag_remove(insn_section.substr(raw_instruction))
         instruction = f"{mnem} {', '.join(operands)}"
-
-        comment = idaapi.get_cmt(address, False)
-        if not comment:
-            comment = idaapi.get_cmt(address, True)
 
         line = DisassemblyLine(
             segment=segment if segment else "",
             address=f"{address:#x}",
             label=label,
             instruction=instruction,
-            comment=comment,
+            comments=comments,
         )
 
         lines += [line]
@@ -1160,16 +1197,28 @@ def get_global_variable_value(variable_name: Annotated[str, "Name of the global 
     if ea == idaapi.BADADDR:
         raise IDAError(f"Global variable {variable_name} not found")
 
+    return get_global_variable_value_internal(ea)
+
+def get_global_variable_value_internal(ea: int) -> str:
     # Get the type information for the variable
     tif = ida_typeinf.tinfo_t()
     if not ida_nalt.get_tinfo(tif, ea):
-        raise IDAError(f"Failed to get type information for {variable_name}")
+        # No type info, maybe we can figure out its size by its name
+        if not ida_bytes.has_any_name(ea):
+            raise IDAError(f"Failed to get type information for variable at {ea:#x}")
 
-    # Determine the size of the variable
-    size = tif.get_size()
+        size = ida_bytes.get_item_size(ea)
+        if size == 0:
+            raise IDAError(f"Failed to get type information for variable at {ea:#x}")
+    else:
+        # Determine the size of the variable
+        size = tif.get_size()
 
     # Read the value based on the size
-    if size == 1:
+    if size == 0 and tif.is_array() and tif.get_array_element().is_decl_char():
+        return_string = idaapi.get_strlit_contents(ea, -1, 0).decode("utf-8").strip()
+        return f"\"{return_string}\""
+    elif size == 1:
         return hex(ida_bytes.get_byte(ea))
     elif size == 2:
         return hex(ida_bytes.get_word(ea))
