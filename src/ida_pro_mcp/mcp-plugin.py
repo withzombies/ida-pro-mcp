@@ -883,32 +883,92 @@ def decompile_function(
 
     return pseudocode
 
+class DisassemblyLine(TypedDict):
+    segment: str
+    address: str
+    label: Optional[str]
+    instruction: str
+    comment: Optional[str]
+
+class Argument(TypedDict):
+    name: str
+    type: str
+
+class DisassemblyFunction(TypedDict):
+    name: str
+    start_ea: str
+    return_type: Optional[str]
+    arguments: Optional[list[Argument]]
+    stack_frame: list[dict]
+    lines: list[DisassemblyLine]
+
 @jsonrpc
 @idaread
 def disassemble_function(
     start_address: Annotated[str, "Address of the function to disassemble"],
-) -> str:
-    """Get assembly code (address: instruction; comment) for a function"""
+) -> DisassemblyFunction:
+    """Get assembly code for a function"""
     start = parse_address(start_address)
-    func = idaapi.get_func(start)
+    func: ida_funcs.func_t = idaapi.get_func(start)
     if not func:
         raise IDAError(f"No function found containing address {start_address}")
     if is_window_active():
         ida_kernwin.jumpto(start)
 
-    # TODO: add labels and limit the maximum number of instructions
-    disassembly = ""
+    lines = []
     for address in ida_funcs.func_item_iterator_t(func):
-        if len(disassembly) > 0:
-            disassembly += "\n"
-        disassembly += f"{hex(address)}: "
-        disassembly += idaapi.generate_disasm_line(address, idaapi.GENDSM_REMOVE_TAGS)
+        seg = idaapi.getseg(address)
+        segment = idaapi.get_segm_name(seg) if seg else None
+
+        label = idc.get_name(address, 0)
+        if label and label == func.name and address == func.start_ea:
+            label = None
+        if label == "":
+            label = None
+
+        raw_instruction = idaapi.generate_disasm_line(address, 0)
+        tls = ida_kernwin.tagged_line_sections_t()
+        ida_kernwin.parse_tagged_line_sections(tls, raw_instruction)
+        insn_section = tls.first(ida_lines.COLOR_INSN)
+
+        mnem = ida_lines.tag_remove(insn_section.substr(raw_instruction))
+        operands = []
+        for op_tag in range(ida_lines.COLOR_OPND1, ida_lines.COLOR_OPND8 + 1):
+            op_n = tls.first(op_tag)
+            if not op_n:
+                break
+
+            operands += [ida_lines.tag_remove(op_n.substr(raw_instruction))]
+
+        instruction = f"{mnem} {', '.join(operands)}"
+
         comment = idaapi.get_cmt(address, False)
         if not comment:
             comment = idaapi.get_cmt(address, True)
-        if comment:
-            disassembly += f"; {comment}"
-    return disassembly
+
+        line = DisassemblyLine(
+            segment=segment if segment else "",
+            address=f"{address:#x}",
+            label=label,
+            instruction=instruction,
+            comment=comment,
+        )
+
+        lines += [line]
+
+    prototype = func.get_prototype()
+    arguments: list[Argument] = [Argument(name=arg.name, type=f"{arg.type}") for arg in prototype.iter_func()] if prototype else None
+
+    disassembly_function = DisassemblyFunction(
+        name=func.name,
+        start_ea=f"{func.start_ea:#x}",
+        return_type=f"{prototype.get_rettype()}" if prototype else None,
+        arguments=arguments,
+        stack_frame=get_stack_frame_variables_internal(func.start_ea),
+        lines=lines
+    )
+
+    return disassembly_function
 
 class Xref(TypedDict):
     address: str
@@ -1260,8 +1320,10 @@ def get_stack_frame_variables(
         function_address: Annotated[str, "Address of the disassembled function to retrieve the stack frame variables"]
 ) -> list[dict]:
     """ Retrieve the stack frame variables for a given function """
+    return get_stack_frame_variables_internal(parse_address(function_address))
 
-    func = idaapi.get_func(parse_address(function_address))
+def get_stack_frame_variables_internal(function_address: int) -> list[dict]:
+    func = idaapi.get_func(function_address)
     if not func:
         raise IDAError(f"No function found at address {function_address}")
 
