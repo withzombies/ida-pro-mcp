@@ -1421,7 +1421,7 @@ class StructureDefinition(TypedDict):
 
 @jsonrpc
 @idaread
-def get_defined_structures() -> list[dict]:
+def get_defined_structures() -> list[StructureDefinition]:
     """ Returns a list of all defined structures """
 
     rv = []
