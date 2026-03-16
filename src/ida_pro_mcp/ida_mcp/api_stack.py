@@ -38,9 +38,9 @@ def stack_frame(addrs: Annotated[list[str] | str, "Address(es)"]) -> list[dict]:
         try:
             ea = parse_address(addr)
             vars = get_stack_frame_variables_internal(ea, True)
-            results.append({"addr": addr, "vars": vars})
+            results.append({"addr": addr, "vars": vars, "frame": vars, "error": None})
         except Exception as e:
-            results.append({"addr": addr, "vars": None, "error": str(e)})
+            results.append({"addr": addr, "vars": None, "frame": None, "error": str(e)})
 
     return results
 
@@ -54,38 +54,38 @@ def declare_stack(
     items = normalize_dict_list(items)
     results = []
     for item in items:
-        fn_addr = item.get("addr", "")
+        fn_addr = item.get("addr", item.get("func", ""))
         offset = item.get("offset", "")
         var_name = item.get("name", "")
-        type_name = item.get("ty", "")
+        type_name = item.get("ty", item.get("type", ""))
 
         try:
             func = idaapi.get_func(parse_address(fn_addr))
             if not func:
                 results.append(
-                    {"addr": fn_addr, "name": var_name, "error": "No function found"}
+                    {"addr": fn_addr, "func": fn_addr, "name": var_name, "error": "No function found"}
                 )
                 continue
 
-            ea = parse_address(offset)
+            ea = int(offset)
 
             frame_tif = ida_typeinf.tinfo_t()
             if not ida_frame.get_func_frame(frame_tif, func):
                 results.append(
-                    {"addr": fn_addr, "name": var_name, "error": "No frame returned"}
+                    {"addr": fn_addr, "func": fn_addr, "name": var_name, "error": "No frame returned"}
                 )
                 continue
 
             tif = get_type_by_name(type_name)
             if not ida_frame.define_stkvar(func, var_name, ea, tif):
                 results.append(
-                    {"addr": fn_addr, "name": var_name, "error": "Failed to define"}
+                    {"addr": fn_addr, "func": fn_addr, "name": var_name, "error": "Failed to define"}
                 )
                 continue
 
-            results.append({"addr": fn_addr, "name": var_name, "ok": True})
+            results.append({"addr": fn_addr, "func": fn_addr, "name": var_name, "ok": True, "error": None})
         except Exception as e:
-            results.append({"addr": fn_addr, "name": var_name, "error": str(e)})
+            results.append({"addr": fn_addr, "func": fn_addr, "name": var_name, "error": str(e)})
 
     return results
 
@@ -100,21 +100,21 @@ def delete_stack(
     items = normalize_dict_list(items)
     results = []
     for item in items:
-        fn_addr = item.get("addr", "")
+        fn_addr = item.get("addr", item.get("func", ""))
         var_name = item.get("name", "")
 
         try:
             func = idaapi.get_func(parse_address(fn_addr))
             if not func:
                 results.append(
-                    {"addr": fn_addr, "name": var_name, "error": "No function found"}
+                    {"addr": fn_addr, "func": fn_addr, "name": var_name, "error": "No function found"}
                 )
                 continue
 
             frame_tif = ida_typeinf.tinfo_t()
             if not ida_frame.get_func_frame(frame_tif, func):
                 results.append(
-                    {"addr": fn_addr, "name": var_name, "error": "No frame returned"}
+                    {"addr": fn_addr, "func": fn_addr, "name": var_name, "error": "No frame returned"}
                 )
                 continue
 
@@ -123,6 +123,7 @@ def delete_stack(
                 results.append(
                     {
                         "addr": fn_addr,
+                        "func": fn_addr,
                         "name": var_name,
                         "error": f"{var_name} not found",
                     }
@@ -134,6 +135,7 @@ def delete_stack(
                 results.append(
                     {
                         "addr": fn_addr,
+                        "func": fn_addr,
                         "name": var_name,
                         "error": f"{var_name} is special frame member",
                     }
@@ -148,6 +150,7 @@ def delete_stack(
                 results.append(
                     {
                         "addr": fn_addr,
+                        "func": fn_addr,
                         "name": var_name,
                         "error": f"{var_name} is argument member",
                     }
@@ -156,12 +159,12 @@ def delete_stack(
 
             if not ida_frame.delete_frame_members(func, offset, offset + size):
                 results.append(
-                    {"addr": fn_addr, "name": var_name, "error": "Failed to delete"}
+                    {"addr": fn_addr, "func": fn_addr, "name": var_name, "error": "Failed to delete"}
                 )
                 continue
 
-            results.append({"addr": fn_addr, "name": var_name, "ok": True})
+            results.append({"addr": fn_addr, "func": fn_addr, "name": var_name, "ok": True, "error": None})
         except Exception as e:
-            results.append({"addr": fn_addr, "name": var_name, "error": str(e)})
+            results.append({"addr": fn_addr, "func": fn_addr, "name": var_name, "error": str(e)})
 
     return results

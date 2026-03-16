@@ -991,6 +991,7 @@ def infer_types(
                         "inferred_type": str(tif),
                         "method": "hexrays",
                         "confidence": "high",
+                        "error": None,
                     }
                 )
                 continue
@@ -1003,6 +1004,7 @@ def infer_types(
                         "inferred_type": str(tif),
                         "method": "existing",
                         "confidence": "high",
+                        "error": None,
                     }
                 )
                 continue
@@ -1023,6 +1025,7 @@ def infer_types(
                         "inferred_type": type_guess,
                         "method": "size_based",
                         "confidence": "low",
+                        "error": None,
                     }
                 )
                 continue
@@ -1033,6 +1036,7 @@ def infer_types(
                     "inferred_type": None,
                     "method": None,
                     "confidence": "none",
+                    "error": None,
                 }
             )
 

@@ -185,6 +185,7 @@ def _collect_entities(kind: str) -> list[dict]:
                     "kind": "import",
                     "addr": imp["addr"],
                     "name": imp["imported_name"],
+                    "imported_name": imp["imported_name"],
                     "module": imp["module"],
                 }
             )
@@ -477,24 +478,6 @@ def func_query(
         },
     )
 
-    all_functions: list[dict] = []
-    for addr in idautils.Functions():
-        fn = idaapi.get_func(addr)
-        if not fn:
-            continue
-        size_int = fn.end_ea - fn.start_ea
-        fn_name = ida_funcs.get_func_name(fn.start_ea) or "<unnamed>"
-        has_type = ida_nalt.get_tinfo(ida_typeinf.tinfo_t(), fn.start_ea)
-        all_functions.append(
-            {
-                "addr": hex(fn.start_ea),
-                "name": fn_name,
-                "size": hex(size_int),
-                "size_int": size_int,
-                "has_type": has_type,
-            }
-        )
-
     def apply_name_regex(items: list[dict], expr: str) -> list[dict]:
         if not expr:
             return items
@@ -512,26 +495,98 @@ def func_query(
         descending = bool(query.get("descending", False))
         if sort_by not in ("addr", "name", "size"):
             sort_by = "addr"
+        name_filter = query.get("filter", "")
+        name_regex = query.get("name_regex", "")
+        min_size = query.get("min_size")
+        max_size = query.get("max_size")
+        require_type = bool(query.get("has_type")) if "has_type" in query else None
+
+        if sort_by == "addr" and not descending:
+            compiled_regex = None
+            if name_regex:
+                try:
+                    compiled_regex = re.compile(name_regex)
+                except re.error:
+                    results.append({"data": [], "next_offset": None, "total": 0})
+                    continue
+
+            rows: list[dict] = []
+            matched = 0
+            more = False
+            for addr in idautils.Functions():
+                fn = idaapi.get_func(addr)
+                if not fn:
+                    continue
+                size_int = fn.end_ea - fn.start_ea
+                fn_name = ida_funcs.get_func_name(fn.start_ea) or "<unnamed>"
+                has_type = bool(ida_nalt.get_tinfo(ida_typeinf.tinfo_t(), fn.start_ea))
+                row = {
+                    "addr": hex(fn.start_ea),
+                    "name": fn_name,
+                    "size": hex(size_int),
+                    "size_int": size_int,
+                    "has_type": has_type,
+                }
+
+                if name_filter and not pattern_filter([row], name_filter, "name"):
+                    continue
+                if compiled_regex and not compiled_regex.search(fn_name):
+                    continue
+                if min_size is not None and size_int < int(min_size):
+                    continue
+                if max_size is not None and size_int > int(max_size):
+                    continue
+                if require_type is not None and has_type is not require_type:
+                    continue
+
+                if count != 0 and matched < offset:
+                    matched += 1
+                    continue
+                rows.append(row)
+                if count != 0 and len(rows) > count:
+                    more = True
+                    rows = rows[:count]
+                    break
+
+            for item in rows:
+                item.pop("size_int", None)
+            results.append(
+                {
+                    "data": rows,
+                    "next_offset": (offset + count) if more and count != 0 else None,
+                    "total": None,
+                }
+            )
+            continue
+
+        all_functions: list[dict] = []
+        for addr in idautils.Functions():
+            fn = idaapi.get_func(addr)
+            if not fn:
+                continue
+            size_int = fn.end_ea - fn.start_ea
+            fn_name = ida_funcs.get_func_name(fn.start_ea) or "<unnamed>"
+            has_type = ida_nalt.get_tinfo(ida_typeinf.tinfo_t(), fn.start_ea)
+            all_functions.append(
+                {
+                    "addr": hex(fn.start_ea),
+                    "name": fn_name,
+                    "size": hex(size_int),
+                    "size_int": size_int,
+                    "has_type": has_type,
+                }
+            )
 
         filtered = all_functions
-        name_filter = query.get("filter", "")
         if name_filter:
             filtered = pattern_filter(filtered, name_filter, "name")
-
-        name_regex = query.get("name_regex", "")
         if name_regex:
             filtered = apply_name_regex(filtered, name_regex)
-
-        min_size = query.get("min_size")
         if min_size is not None:
             filtered = [f for f in filtered if f["size_int"] >= int(min_size)]
-
-        max_size = query.get("max_size")
         if max_size is not None:
             filtered = [f for f in filtered if f["size_int"] <= int(max_size)]
-
-        if "has_type" in query:
-            require_type = bool(query.get("has_type"))
+        if require_type is not None:
             filtered = [f for f in filtered if bool(f["has_type"]) is require_type]
 
         if sort_by == "name":
@@ -543,6 +598,7 @@ def func_query(
 
         page = paginate(filtered, offset, count)
         page["data"] = [{k: v for k, v in item.items() if k != "size_int"} for item in page["data"]]
+        page["total"] = len(filtered)
         results.append(page)
 
     return results
@@ -692,10 +748,23 @@ def entity_query(
 @tool
 @idasync
 def imports(
-    offset: Annotated[int, "Starting pagination index (default: 0)"],
-    count: Annotated[int, "Maximum rows (0 returns all imports)"],
-) -> Page[Import]:
+    offset: Annotated[int | list[ImportQuery] | ImportQuery, "Starting pagination index or query object (default: 0)"],
+    count: Annotated[int, "Maximum rows (0 returns all imports)"] = 100,
+) -> Page[Import] | list[dict]:
     """List imports with module names using offset/count pagination."""
+    if isinstance(offset, (dict, list, str)):
+        queries = normalize_dict_list(offset, lambda s: {"filter": s, "offset": 0, "count": 100})
+        all_imports = _collect_imports()
+        results = []
+        for query in queries:
+            filtered = all_imports
+            filter_pattern = query.get("filter", "")
+            if filter_pattern in ("", "*"):
+                filter_pattern = ""
+            if filter_pattern:
+                filtered = pattern_filter(filtered, filter_pattern, "imported_name")
+            results.append(paginate(filtered, query.get("offset", 0), query.get("count", 100)))
+        return results
     return paginate(_collect_imports(), offset, count)
 
 
@@ -757,34 +826,57 @@ def idb_save(
 @tool
 @idasync
 def find_regex(
-    pattern: Annotated[str, "Regex pattern to search for in strings"],
+    pattern: Annotated[str | dict | list[dict], "Regex pattern to search for in strings"],
     limit: Annotated[int, "Max matches (default: 30, max: 500)"] = 30,
     offset: Annotated[int, "Skip first N matches (default: 0)"] = 0,
-) -> dict:
+) -> dict | list[dict]:
     """Search strings by case-insensitive regex with offset/limit pagination."""
-    if limit <= 0:
-        limit = 30
-    if limit > 500:
-        limit = 500
+    def _one(expr: str, count: int, skip: int) -> dict:
+        if count < 0:
+            count = 30
+        if count > 500:
+            count = 500
 
-    matches = []
-    regex = re.compile(pattern, re.IGNORECASE)
-    strings = _get_strings_cache()
+        matches = []
+        regex = re.compile(expr, re.IGNORECASE)
+        strings = _get_strings_cache()
 
-    skipped = 0
-    more = False
-    for ea, text in strings:
-        if regex.search(text):
-            if skipped < offset:
-                skipped += 1
-                continue
-            if len(matches) >= limit:
-                more = True
-                break
-            matches.append({"addr": hex(ea), "string": text})
+        skipped = 0
+        more = False
+        remaining = None if count == 0 else count
+        for ea, text in strings:
+            if regex.search(text):
+                if skipped < skip:
+                    skipped += 1
+                    continue
+                if remaining is not None and len(matches) >= remaining:
+                    more = True
+                    break
+                matches.append({"addr": hex(ea), "string": text})
 
-    return {
-        "n": len(matches),
-        "matches": matches,
-        "cursor": {"next": offset + limit} if more else {"done": True},
-    }
+        return {
+            "n": len(matches),
+            "matches": matches,
+            "cursor": {"next": skip + count} if more and count != 0 else {"done": True},
+        }
+
+    if isinstance(pattern, (dict, list)):
+        queries = normalize_dict_list(pattern, lambda s: {"pattern": s, "offset": 0, "count": 30})
+        results = []
+        for query in queries:
+            page = _one(
+                str(query.get("pattern", "")),
+                int(query.get("count", 30) or 30),
+                int(query.get("offset", 0) or 0),
+            )
+            results.append(
+                {
+                    "query": query.get("pattern"),
+                    "matches": page.get("matches", []),
+                    "error": None,
+                    "next_offset": (page.get("cursor") or {}).get("next"),
+                }
+            )
+        return results
+
+    return _one(pattern, limit, offset)

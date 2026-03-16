@@ -3,6 +3,7 @@ import json
 import logging
 import signal
 import sys
+import threading
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -32,6 +33,19 @@ IDALIB_MANAGEMENT_TOOLS = {
 }
 
 _ISOLATED_CONTEXTS_ENABLED = False
+
+
+def _require_ida_main_thread() -> None:
+    if threading.current_thread() is not threading.main_thread():
+        raise RuntimeError(
+            "idalib server must execute IDA session operations on the main thread. "
+            "Start the MCP server with background=False."
+        )
+
+
+def _serve_mcp_server(host: str, port: int) -> None:
+    _require_ida_main_thread()
+    MCP_SERVER.serve(host=host, port=port, background=False)
 
 
 def _resolve_effective_context_id() -> str:
@@ -70,6 +84,7 @@ def _install_context_activation_hooks() -> None:
     ) -> dict:
         if name not in IDALIB_MANAGEMENT_TOOLS:
             try:
+                _require_ida_main_thread()
                 manager = get_session_manager()
                 context_id = _resolve_effective_context_id()
                 manager.activate_context(context_id)
@@ -86,6 +101,7 @@ def _install_context_activation_hooks() -> None:
 
     def resources_read_with_context(uri: str, _meta: Optional[dict] = None) -> dict:
         try:
+            _require_ida_main_thread()
             manager = get_session_manager()
             context_id = _resolve_effective_context_id()
             manager.activate_context(context_id)
@@ -117,6 +133,7 @@ def idalib_open(
     """Open a binary and bind it to the active idalib context policy."""
 
     try:
+        _require_ida_main_thread()
         manager = get_session_manager()
         context_id = _resolve_effective_context_id()
         opened_session_id = manager.open_binary(
@@ -143,6 +160,7 @@ def idalib_close(session_id: Annotated[str, "Session ID to close"]) -> dict:
     """Close an IDA session and remove all context bindings targeting it."""
 
     try:
+        _require_ida_main_thread()
         manager = get_session_manager()
         if manager.close_session(session_id):
             return {"success": True, "message": f"Session closed: {session_id}"}
@@ -158,6 +176,7 @@ def idalib_switch(
     """Bind the active idalib context to a session and activate it."""
 
     try:
+        _require_ida_main_thread()
         manager = get_session_manager()
         context_id = _resolve_effective_context_id()
         session = manager.bind_context(context_id, session_id, activate=True)
@@ -182,6 +201,7 @@ def idalib_unbind() -> dict:
     """Unbind the active idalib context from any session."""
 
     try:
+        _require_ida_main_thread()
         manager = get_session_manager()
         context_id = _resolve_effective_context_id()
         if manager.unbind_context(context_id):
@@ -204,6 +224,7 @@ def idalib_list() -> dict:
     """List sessions with context-binding and active-database metadata."""
 
     try:
+        _require_ida_main_thread()
         manager = get_session_manager()
         context_id = _resolve_effective_context_id()
         sessions = manager.list_sessions(context_id=context_id)
@@ -223,6 +244,7 @@ def idalib_current() -> dict:
     """Return the session bound to the active idalib context policy."""
 
     try:
+        _require_ida_main_thread()
         manager = get_session_manager()
         context_id = _resolve_effective_context_id()
         session = manager.get_context_session(context_id)
@@ -258,6 +280,7 @@ def idalib_save(
     """Save the active (or requested) IDA session database to disk."""
 
     try:
+        _require_ida_main_thread()
         manager = get_session_manager()
         context_id = _resolve_effective_context_id()
 
@@ -295,6 +318,7 @@ def idalib_health(
 ) -> dict:
     """Health/ready probe for idalib context + core server status."""
     try:
+        _require_ida_main_thread()
         manager = get_session_manager()
         context_id = _resolve_effective_context_id()
 
@@ -339,6 +363,7 @@ def idalib_warmup(
 ) -> dict:
     """Warm up idalib context and core subsystems."""
     try:
+        _require_ida_main_thread()
         manager = get_session_manager()
         context_id = _resolve_effective_context_id()
 
@@ -468,9 +493,8 @@ def main():
     _install_context_activation_hooks()
 
     # NOTE: npx -y @modelcontextprotocol/inspector for debugging
-    # TODO: with background=True the main thread does not fake any
-    # work from @idasync, so we deadlock.
-    MCP_SERVER.serve(host=args.host, port=args.port, background=False)
+    # IDA-sensitive session management must stay on the main thread.
+    _serve_mcp_server(args.host, args.port)
 
 
 if __name__ == "__main__":

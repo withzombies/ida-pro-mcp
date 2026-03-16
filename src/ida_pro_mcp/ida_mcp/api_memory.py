@@ -41,10 +41,15 @@ def get_bytes(regions: list[MemoryRead] | MemoryRead) -> list[dict]:
 
         try:
             ea = parse_address(addr)
-            data = " ".join(f"{x:#02x}" for x in ida_bytes.get_bytes(ea, size))
-            results.append({"addr": addr, "data": data})
+            if not idaapi.getseg(ea):
+                raise ValueError(f"Address not mapped: {addr}")
+            raw = ida_bytes.get_bytes(ea, size)
+            if not raw:
+                raise ValueError("Failed to read bytes")
+            data = " ".join(f"{x:02x}" for x in raw)
+            results.append({"addr": addr, "data": data, "hex": data, "error": None})
         except Exception as e:
-            results.append({"addr": addr, "data": None, "error": str(e)})
+            results.append({"addr": addr, "data": None, "hex": "", "error": str(e)})
 
     return results
 
@@ -139,7 +144,7 @@ def get_string(
                 )
                 continue
             value = raw.decode("utf-8", errors="replace")
-            results.append({"addr": addr, "value": value})
+            results.append({"addr": addr, "value": value, "error": None})
         except Exception as e:
             results.append({"addr": addr, "value": None, "error": str(e)})
 
@@ -210,13 +215,13 @@ def get_global_value(
                 ea = idaapi.get_name_ea(idaapi.BADADDR, query)
 
             if ea == idaapi.BADADDR:
-                results.append({"query": query, "value": None, "error": "Not found"})
+                results.append({"query": query, "addr": None, "value": None, "error": "Not found"})
                 continue
 
             value = get_global_variable_value_internal(ea)
-            results.append({"query": query, "value": value, "error": None})
+            results.append({"query": query, "addr": hex(ea), "value": value, "error": None})
         except Exception as e:
-            results.append({"query": query, "value": None, "error": str(e)})
+            results.append({"query": query, "addr": None, "value": None, "error": str(e)})
 
     return results
 
@@ -238,7 +243,9 @@ def patch(patches: list[MemoryPatch] | MemoryPatch) -> list[dict]:
     for patch in patches:
         try:
             ea = parse_address(patch["addr"])
-            data = bytes.fromhex(patch["data"])
+            if not idaapi.getseg(ea):
+                raise ValueError(f"Address not mapped: {patch['addr']}")
+            data = bytes.fromhex(patch.get("data") or patch.get("hex") or "")
 
             if not ida_bytes.is_mapped(ea):
                 raise ValueError(f"Address not mapped: {patch['addr']}")

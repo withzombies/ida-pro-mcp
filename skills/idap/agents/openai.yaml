@@ -1,0 +1,7 @@
+interface:
+  display_name: "idap"
+  short_description: "Headless IDA workflows via idap"
+  default_prompt: "Use $idap to analyze this binary through the local idap CLI, manage the agent context, and keep output scoped with shaping flags."
+
+policy:
+  allow_implicit_invocation: true

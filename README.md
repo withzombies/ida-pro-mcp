@@ -181,6 +181,116 @@ With `--isolated-contexts`, strict Streamable HTTP session semantics are enabled
 - `idalib_unbind()`: Remove the active context binding.
 - `idalib_list()`: Includes `is_active`, `is_current_context`, and `bound_contexts`.
 
+## `idap` CLI
+
+The repository now includes an experimental daemon-backed CLI for headless `idalib` use:
+
+```sh
+uv run idap daemon start
+eval "$(uv run idap context ensure --shell)"
+uv run idap sessions open path/to/executable --alias sample
+uv run idap context list
+uv run idap funcs list --query 'name:*main*' --limit 10
+uv run idap funcs decompile main --summary
+uv run idap funcs list --format jsonl --limit 5
+uv run idap daemon logs
+```
+
+### Context bootstrapping
+
+Agent and subagent sessions should establish their own context once and then reuse it:
+
+```sh
+# parent agent
+eval "$(uv run idap context ensure --shell)"
+
+# subagent
+eval "$(uv run idap context ensure --shell --force-new)"
+```
+
+This keeps one daemon shared while preserving separate default session bindings for each agent context.
+
+If you want to discard the current agent context and its default binding:
+
+```sh
+uv run idap context release
+```
+
+To inspect all known contexts and their current bindings:
+
+```sh
+uv run idap context list
+```
+
+### Integration helpers
+
+`idap` can also print bootstrap snippets for common setups:
+
+```sh
+uv run idap integrations claude install
+uv run idap integrations claude --format json
+uv run idap integrations codex install
+uv run idap integrations generic
+uv run idap integrations codex
+uv run idap integrations opencode install
+uv run idap integrations opencode
+uv run idap integrations pi install
+uv run idap integrations pi
+```
+
+`funcs disasm` also accepts the more explicit alias `funcs disassemble`.
+`daemon logs` returns the active daemon log file path.
+Collection commands also support `--format jsonl` for one-item-per-line output.
+Text mode renders collections as compact tab-separated tables where possible.
+Use `docs/idap.md` for a fuller operator guide.
+`idap --help` and nested `--help` screens now act as a compact command reference, and mistyped commands/options return ranked suggestions instead of plain argparse errors.
+
+### Shared agent skill
+
+The repo now also ships one shared skill for both Claude and Codex:
+
+```sh
+idap integrations skill doctor
+idap integrations skill show --agent all --format json
+idap integrations claude install-skill
+idap integrations codex install-skill
+```
+
+The canonical source lives at `skills/idap/SKILL.md`.
+Codex also gets a repo-local bridge through `AGENTS.md`.
+
+### Troubleshooting
+
+- If name-based lookups like `funcs show main` fail after `sessions open`, do not use `--no-analysis` for that database.
+- Manual CLI usage now reuses a cached local context across invocations, so `sessions open` and later `funcs` commands target the same binding by default.
+- `--format` works both before the top-level command and after the leaf subcommand, for example:
+
+```sh
+uv run idap --format jsonl funcs list --limit 5
+uv run idap funcs list --limit 5 --format jsonl
+```
+
+### Validation
+
+Fast `idap` suite:
+
+```sh
+./scripts/test-idap.sh fast
+```
+
+Live `idap` CLI suite:
+
+```sh
+./scripts/test-idap.sh live
+```
+
+Pytest markers are also defined for CI and local filtering:
+
+```sh
+uv run --with pytest pytest -q tests -m fast
+uv run --with pytest pytest -q tests -m live_idap
+```
+
 
 ## MCP Resources
 

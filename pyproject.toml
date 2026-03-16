@@ -40,6 +40,7 @@ build-backend = "setuptools.build_meta"
 ida-pro-mcp = "ida_pro_mcp.server:main"
 idalib-mcp = "ida_pro_mcp.idalib_server:main"
 ida-mcp-test = "ida_pro_mcp.test:main"
+idap = "ida_pro_mcp.cli:main"
 
 [tool.pyright]
 include = ["src/ida_pro_mcp"]
@@ -53,4 +54,10 @@ include = ["src/ida_pro_mcp/*"]
 omit = [
     "src/ida_pro_mcp/ida_mcp/tests/*",
     "src/ida_pro_mcp/ida_mcp/zeromcp/*",
+]
+
+[tool.pytest.ini_options]
+markers = [
+    "fast: quick idap unit and local integration coverage",
+    "live_idap: subprocess-backed live idap coverage against a real IDA database",
 ]

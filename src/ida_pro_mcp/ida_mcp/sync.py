@@ -50,7 +50,7 @@ def _get_tool_timeout_seconds() -> float:
         return _DEFAULT_TOOL_TIMEOUT_SEC
 
 
-call_stack = queue.LifoQueue()
+call_stack: list[str] = []
 
 
 def _sync_wrapper(ff):
@@ -59,24 +59,41 @@ def _sync_wrapper(ff):
     res_container = queue.Queue()
 
     def runned():
-        if not call_stack.empty():
-            last_func_name = call_stack.get()
-            error_str = f"Call stack is not empty while calling the function {ff.__name__} from {last_func_name}"
-            raise IDASyncError(error_str)
-
-        call_stack.put((ff.__name__))
-        # Enable batch mode for all synchronized operations
-        old_batch = idc.batch(1)
+        old_batch = None
+        pushed_name = False
         try:
-            res_container.put(ff())
+            if call_stack:
+                last_func_name = call_stack[-1]
+                error_str = (
+                    f"Call stack is not empty while calling the function {ff.__name__} "
+                    f"from {last_func_name}"
+                )
+                res_container.put(IDASyncError(error_str))
+                return
+
+            call_stack.append(ff.__name__)
+            pushed_name = True
+            # Enable batch mode for all synchronized operations
+            old_batch = idc.batch(1)
+            try:
+                res_container.put(ff())
+            except Exception as x:
+                res_container.put(x)
         except Exception as x:
             res_container.put(x)
         finally:
-            idc.batch(old_batch)
-            call_stack.get()
+            if old_batch is not None:
+                idc.batch(old_batch)
+            if pushed_name and call_stack:
+                call_stack.pop()
 
     idaapi.execute_sync(runned, idaapi.MFF_WRITE)
-    res = res_container.get()
+    try:
+        res = res_container.get(timeout=1.0)
+    except queue.Empty as exc:
+        raise IDASyncError(
+            f"IDA synchronized call did not produce a result for {ff.__name__}"
+        ) from exc
     if isinstance(res, Exception):
         raise res
     return res

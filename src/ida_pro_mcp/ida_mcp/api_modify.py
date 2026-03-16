@@ -736,6 +736,9 @@ def define_func(items: list[DefineOp] | DefineOp) -> list[dict]:
                 continue
 
             success = ida_funcs.add_func(start_ea, end_ea)
+            if not success:
+                ida_ua.create_insn(start_ea)
+                success = ida_funcs.add_func(start_ea, end_ea)
             if success:
                 func = idaapi.get_func(start_ea)
                 results.append(
@@ -807,6 +810,9 @@ def undefine(items: list[UndefineOp] | UndefineOp) -> list[dict]:
 
         try:
             start_ea = parse_address(addr_str)
+            existing_func = idaapi.get_func(start_ea)
+            if existing_func is not None:
+                ida_funcs.del_func(start_ea)
 
             # Determine size from end address or explicit size
             if end_str:

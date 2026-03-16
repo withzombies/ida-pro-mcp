@@ -19,6 +19,7 @@ from .utils import (
     parse_address,
     normalize_list_input,
     normalize_dict_list,
+    looks_like_address,
     get_function,
     get_prototype,
     paginate,
@@ -366,34 +367,37 @@ def _profile_function(
 @idasync
 @tool_timeout(90.0)
 def decompile(
-    addr: Annotated[str, "Function address or name to decompile"],
-) -> dict:
+    addr: Annotated[list[str] | str, "Function address or name to decompile"],
+) -> dict | list[dict]:
     """Decompile function(s) at address(es); returns pseudocode and per-item errors."""
-    try:
+    def _one(query: str) -> dict:
         try:
-            start = parse_address(addr)
-        except IDAError:
-            ea = idaapi.get_name_ea(idaapi.BADADDR, addr)
-            if ea == idaapi.BADADDR:
-                return {
-                    "addr": addr,
-                    "code": None,
-                    "error": f"Function not found: {addr!r}",
-                }
-            start = ea
-        code = decompile_function_safe(start)
-        if code is None:
-            return {"addr": addr, "code": None, "error": "Decompilation failed"}
-        return {"addr": addr, "code": code}
-    except Exception as e:
-        return {"addr": addr, "code": None, "error": str(e)}
+            try:
+                start = parse_address(query)
+            except IDAError:
+                ea = idaapi.get_name_ea(idaapi.BADADDR, query)
+                if ea == idaapi.BADADDR:
+                    return {"addr": query, "code": None, "error": f"Function not found: {query!r}"}
+                start = ea
+            code = decompile_function_safe(start)
+            if code is None:
+                return {"addr": query, "code": None, "error": "Decompilation failed"}
+            return {"addr": query, "code": code, "error": None}
+        except Exception as e:
+            return {"addr": query, "code": None, "error": str(e)}
+
+    if isinstance(addr, list):
+        return [_one(item) for item in addr]
+    legacy_list_result = looks_like_address(addr)
+    result = _one(addr)
+    return [result] if legacy_list_result else result
 
 
 @tool
 @idasync
 @tool_timeout(90.0)
 def disasm(
-    addr: Annotated[str, "Function address or name to disassemble"],
+    addr: Annotated[list[str] | str, "Function address or name to disassemble"],
     max_instructions: Annotated[
         int, "Max instructions per function (default: 5000, max: 50000)"
     ] = 5000,
@@ -401,8 +405,23 @@ def disasm(
     include_total: Annotated[
         bool, "Compute total instruction count (default: false)"
     ] = False,
-) -> dict:
+    count: Annotated[int | None, "Legacy alias for max_instructions"] = None,
+) -> dict | list[dict]:
     """Disassemble function with offset/max_instructions pagination and optional total count."""
+    if isinstance(addr, list):
+        return [
+            disasm(
+                item,
+                max_instructions=max_instructions,
+                offset=offset,
+                include_total=include_total,
+                count=count,
+            )
+            for item in addr
+        ]
+    if count is not None:
+        max_instructions = count
+    legacy_list_result = looks_like_address(addr)
 
     # Enforce max limit
     if max_instructions <= 0 or max_instructions > 50000:
@@ -416,24 +435,23 @@ def disasm(
         except IDAError:
             ea = idaapi.get_name_ea(idaapi.BADADDR, addr)
             if ea == idaapi.BADADDR:
-                return {
-                    "addr": addr,
-                    "asm": None,
-                    "error": f"Function not found: {addr!r}",
-                    "cursor": {"done": True},
-                }
+                result = {"addr": addr, "asm": None, "error": f"Function not found: {addr!r}", "cursor": {"done": True}}
+                return [result] if legacy_list_result else result
             start = ea
         func = idaapi.get_func(start)
+        if func and start != func.start_ea:
+            legacy_list_result = False
 
         # Get segment info
         seg = idaapi.getseg(start)
         if not seg:
-            return {
+            result = {
                 "addr": addr,
                 "asm": None,
                 "error": "No segment found",
                 "cursor": {"done": True},
             }
+            return [result] if legacy_list_result else result
 
         segment_name = idaapi.get_segm_name(seg) if seg else "UNKNOWN"
 
@@ -524,20 +542,23 @@ def disasm(
         if args is not None:
             out["arguments"] = args
 
-        return {
+        result = {
             "addr": addr,
             "asm": out,
+            "error": None,
             "instruction_count": len(lines),
             "total_instructions": total_count if include_total else None,
             "cursor": ({"next": offset + max_instructions} if more else {"done": True}),
         }
+        return [result] if legacy_list_result else result
     except Exception as e:
-        return {
+        result = {
             "addr": addr,
             "asm": None,
             "error": str(e),
             "cursor": {"done": True},
         }
+        return [result] if legacy_list_result else result
 
 
 # ============================================================================
@@ -897,7 +918,7 @@ def xrefs_to(
                         fn=get_function(xref.frm, raise_error=False),
                     )
                 )
-            results.append({"addr": addr, "xrefs": xrefs, "more": more})
+            results.append({"addr": addr, "xrefs": xrefs, "more": more, "error": None})
         except Exception as e:
             results.append({"addr": addr, "xrefs": None, "error": str(e)})
 
@@ -1138,7 +1159,9 @@ def callees(
     """Return unique callees per function, capped by limit."""
     addrs = normalize_list_input(addrs)
 
-    if limit <= 0 or limit > 500:
+    if limit < 0:
+        limit = 200
+    if limit > 500:
         limit = 500
 
     results = []
@@ -1157,7 +1180,7 @@ def callees(
             more = False
             current_ea = func_start
             while current_ea < func_end:
-                if len(callees_dict) >= limit:
+                if limit > 0 and len(callees_dict) >= limit:
                     more = True
                     break
                 insn = _decode_insn_at(current_ea)
@@ -1198,6 +1221,7 @@ def callees(
                     "addr": fn_addr,
                     "callees": list(callees_dict.values()),
                     "more": more,
+                    "error": None,
                 }
             )
         except Exception as e:
@@ -1245,6 +1269,7 @@ def find_bytes(
             if build_err is not None:
                 results.append(
                     {
+                        "query": pattern,
                         "pattern": pattern,
                         "matches": [],
                         "n": 0,
@@ -1274,6 +1299,7 @@ def find_bytes(
         except Exception as e:
             results.append(
                 {
+                    "query": pattern,
                     "pattern": pattern,
                     "matches": [],
                     "n": 0,
@@ -1285,10 +1311,12 @@ def find_bytes(
 
         results.append(
             {
+                "query": pattern,
                 "pattern": pattern,
                 "matches": matches,
                 "n": len(matches),
                 "cursor": {"next": offset + limit} if more else {"done": True},
+                "error": None,
             }
         )
     return results
@@ -1312,7 +1340,9 @@ def basic_blocks(
     addrs = normalize_list_input(addrs)
 
     # Enforce max limit
-    if max_blocks <= 0 or max_blocks > 10000:
+    if max_blocks < 0:
+        max_blocks = 1000
+    if max_blocks > 10000:
         max_blocks = 10000
 
     results = []
@@ -1348,8 +1378,12 @@ def basic_blocks(
 
             # Apply pagination
             total_blocks = len(all_blocks)
-            blocks = all_blocks[offset : offset + max_blocks]
-            more = offset + max_blocks < total_blocks
+            if max_blocks == 0:
+                blocks = all_blocks[offset:]
+                more = False
+            else:
+                blocks = all_blocks[offset : offset + max_blocks]
+                more = offset + max_blocks < total_blocks
 
             results.append(
                 {
@@ -1358,7 +1392,7 @@ def basic_blocks(
                     "count": len(blocks),
                     "total_blocks": total_blocks,
                     "cursor": (
-                        {"next": offset + max_blocks} if more else {"done": True}
+                        {"next": offset + max_blocks} if more and max_blocks != 0 else {"done": True}
                     ),
                     "error": None,
                 }
@@ -1388,17 +1422,25 @@ def find(
     ],
     targets: Annotated[
         list[str | int] | str | int, "Search targets (strings, integers, or addresses)"
-    ],
+    ] = "",
     limit: Annotated[int, "Max matches per target (default: 1000, max: 10000)"] = 1000,
     offset: Annotated[int, "Skip first N matches (default: 0)"] = 0,
+    query: Annotated[list[str | int] | str | int | None, "Legacy alias for targets"] = None,
 ) -> list[dict]:
     """Search strings/immediates/refs for targets with offset/limit pagination."""
+    if query is not None:
+        targets = query
+    if isinstance(targets, str) and targets == "*" and type == "string":
+        targets = [""]
     if not isinstance(targets, list):
         targets = [targets]
 
     # Enforce max limit to prevent token overflow
-    if limit <= 0 or limit > 10000:
+    if limit < 0:
+        limit = 1000
+    if limit > 10000:
         limit = 10000
+    unlimited = limit == 0
 
     results = []
 
@@ -1406,6 +1448,26 @@ def find(
         # Raw byte search for UTF-8 substrings across the binary
         for pattern in targets:
             pattern_str = str(pattern)
+            if pattern_str in {"", "*"}:
+                matches = []
+                more = False
+                for s in idautils.Strings():
+                    if s is None:
+                        continue
+                    matches.append(hex(s.ea))
+                    if not unlimited and len(matches) >= limit:
+                        more = True
+                        break
+                results.append(
+                    {
+                        "query": pattern_str,
+                        "matches": matches,
+                        "count": len(matches),
+                        "cursor": {"next": offset + limit} if more and not unlimited else {"done": True},
+                        "error": None,
+                    }
+                )
+                continue
             pattern_bytes = pattern_str.encode("utf-8")
             if not pattern_bytes:
                 results.append(
@@ -1433,7 +1495,7 @@ def find(
                             skipped += 1
                         else:
                             matches.append(hex(ea))
-                            if len(matches) >= limit:
+                            if not unlimited and len(matches) >= limit:
                                 next_ea = _raw_bin_search(
                                     ea + 1, max_ea, pattern_bytes, mask
                                 )
@@ -1448,7 +1510,7 @@ def find(
                     "query": pattern_str,
                     "matches": matches,
                     "count": len(matches),
-                    "cursor": {"next": offset + limit} if more else {"done": True},
+                    "cursor": {"next": offset + limit} if more and not unlimited else {"done": True},
                     "error": None,
                 }
             )
@@ -1502,7 +1564,7 @@ def find(
                                     skipped += 1
                                 else:
                                     matches.append(hex(insn_start))
-                                    if len(matches) >= limit:
+                                    if not unlimited and len(matches) >= limit:
                                         more = True
                                         break
 
@@ -1520,7 +1582,7 @@ def find(
                     "query": value,
                     "matches": matches,
                     "count": len(matches),
-                    "cursor": {"next": offset + limit} if more else {"done": True},
+                    "cursor": {"next": offset + limit} if more and not unlimited else {"done": True},
                     "error": None,
                 }
             )
@@ -1532,8 +1594,9 @@ def find(
                 target = parse_address(str(target_str))
                 gen = (hex(xref) for xref in idautils.DataRefsTo(target))
                 # Skip offset items, take limit+1 to check more
-                matches = list(islice(islice(gen, offset, None), limit + 1))
-                more = len(matches) > limit
+                window = None if unlimited else limit + 1
+                matches = list(islice(islice(gen, offset, None), window))
+                more = not unlimited and len(matches) > limit
                 if more:
                     matches = matches[:limit]
 
@@ -1543,7 +1606,7 @@ def find(
                         "matches": matches,
                         "count": len(matches),
                         "cursor": (
-                            {"next": offset + limit} if more else {"done": True}
+                            {"next": offset + limit} if more and not unlimited else {"done": True}
                         ),
                         "error": None,
                     }
@@ -1566,8 +1629,9 @@ def find(
                 target = parse_address(str(target_str))
                 gen = (hex(xref) for xref in idautils.CodeRefsTo(target, 0))
                 # Skip offset items, take limit+1 to check more
-                matches = list(islice(islice(gen, offset, None), limit + 1))
-                more = len(matches) > limit
+                window = None if unlimited else limit + 1
+                matches = list(islice(islice(gen, offset, None), window))
+                more = not unlimited and len(matches) > limit
                 if more:
                     matches = matches[:limit]
 
@@ -1577,7 +1641,7 @@ def find(
                         "matches": matches,
                         "count": len(matches),
                         "cursor": (
-                            {"next": offset + limit} if more else {"done": True}
+                            {"next": offset + limit} if more and not unlimited else {"done": True}
                         ),
                         "error": None,
                     }
@@ -1896,8 +1960,12 @@ def export_funcs(
     format: Annotated[
         str, "Export format: json (default), c_header, or prototypes"
     ] = "json",
-) -> dict:
+    fmt: Annotated[str | None, "Legacy alias for format"] = None,
+) -> dict | list[dict]:
     """Export function data for addresses in json/c_header/prototypes formats."""
+    if fmt:
+        format = fmt
+    raw_addrs = addrs
     addrs = normalize_list_input(addrs)
     results = []
 
@@ -1933,6 +2001,8 @@ def export_funcs(
         for func in results:
             if "prototype" in func and func["prototype"]:
                 lines.append(f"{func['prototype']};")
+        if fmt is not None:
+            return [{"format": "c_header", "content": "\n".join(lines), "error": None}]
         return {"format": "c_header", "content": "\n".join(lines)}
 
     elif format == "prototypes":
@@ -1943,8 +2013,12 @@ def export_funcs(
                 prototypes.append(
                     {"name": func.get("name"), "prototype": func["prototype"]}
                 )
+        if fmt is not None:
+            return prototypes
         return {"format": "prototypes", "functions": prototypes}
 
+    if fmt is not None or isinstance(raw_addrs, str):
+        return results
     return {"format": "json", "functions": results}
 
 

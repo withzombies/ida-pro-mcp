@@ -859,11 +859,15 @@ def get_type_by_name(type_name: str) -> ida_typeinf.tinfo_t:
 def paginate(data: list[T], offset: int, count: int) -> Page[T]:
     if count == 0:
         count = len(data)
+    page_data = data[offset : offset + count]
     next_offset = offset + count
     if next_offset >= len(data):
         next_offset = None
     return {
-        "data": data[offset : offset + count],
+        "data": page_data,
+        "offset": offset,
+        "count": len(page_data),
+        "total": len(data),
         "next_offset": next_offset,
     }
 
@@ -1186,10 +1190,12 @@ def get_callers(addr: str, limit: int = 50) -> list[Function]:
     try:
         callers = {}
         iterations = 0
-        max_iterations = limit * 100
+        max_iterations = limit * 100 if limit > 0 else None
         for caller_addr in idautils.CodeRefsTo(parse_address(addr), 0):
             iterations += 1
-            if len(callers) >= limit or iterations >= max_iterations:
+            if limit > 0 and len(callers) >= limit:
+                break
+            if max_iterations is not None and iterations >= max_iterations:
                 break
             func = get_function(caller_addr, raise_error=False)
             if not func:
